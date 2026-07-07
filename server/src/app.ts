@@ -1,25 +1,19 @@
+import { readFileSync } from 'node:fs';
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { dispatchAlerts, type PushSender } from './alerts.js';
+import { parseHeatSheetCsv, type ProgramEventInput } from './heatsheet.js';
 import { advance, currentHeat, findHeat, flatHeats, setPosition, upcomingSwims, validateProgram } from './meets.js';
 import { Store } from './store.js';
 import { clipWindow, formatSwimTime, recordHorn, recordTouch, unofficialMs } from './timing.js';
 import type { CameraKind, Clip, Follow, Meet, SwimEvent } from './types.js';
 
-interface ProgramEntryInput {
-  swimmer: { name: string; team?: string; age?: number };
-  lane: number;
-  seedTime?: string;
-}
-
 interface ProgramInput {
   name: string;
   date?: string;
   laneCount?: number;
-  events: Array<{
-    number: number;
-    name: string;
-    heats: Array<{ number: number; entries: ProgramEntryInput[] }>;
-  }>;
+  events: ProgramEventInput[];
 }
 
 class HttpError extends Error {
@@ -37,10 +31,14 @@ function json(res: ServerResponse, status: number, body: unknown): void {
   res.end(payload);
 }
 
-async function readBody(req: IncomingMessage): Promise<any> {
+async function readRawBody(req: IncomingMessage): Promise<string> {
   const chunks: Buffer[] = [];
   for await (const chunk of req) chunks.push(chunk as Buffer);
-  const raw = Buffer.concat(chunks).toString('utf8');
+  return Buffer.concat(chunks).toString('utf8');
+}
+
+async function readBody(req: IncomingMessage): Promise<any> {
+  const raw = await readRawBody(req);
   if (!raw) return {};
   try {
     return JSON.parse(raw);
@@ -48,6 +46,42 @@ async function readBody(req: IncomingMessage): Promise<any> {
     throw new HttpError(400, 'Invalid JSON body');
   }
 }
+
+/** Build and store a meet from a validated program (shared by JSON and CSV import). */
+function createMeet(store: Store, input: ProgramInput): Meet {
+  const laneCount = input.laneCount ?? 8;
+  const events: SwimEvent[] = input.events.map((ev) => ({
+    number: ev.number,
+    name: ev.name,
+    heats: ev.heats.map((h) => ({
+      number: h.number,
+      entries: h.entries.map((e) => ({
+        swimmerId: store.upsertSwimmer(e.swimmer.name, e.swimmer.team, e.swimmer.age).id,
+        lane: e.lane,
+        seedTime: e.seedTime,
+      })),
+      touches: {},
+    })),
+  }));
+  try {
+    validateProgram(events, laneCount);
+  } catch (err) {
+    throw new HttpError(400, (err as Error).message);
+  }
+  const meet: Meet = {
+    id: store.newId(),
+    name: input.name,
+    date: input.date,
+    laneCount,
+    events,
+    currentHeatIndex: -1,
+  };
+  store.meets.set(meet.id, meet);
+  store.persist();
+  return meet;
+}
+
+const publicDir = join(dirname(fileURLToPath(import.meta.url)), '..', 'public');
 
 /** Live event fan-out over Server-Sent Events, keyed by meet. */
 class MeetStream {
@@ -136,42 +170,47 @@ export function createApp(store: Store, pushSender: PushSender): App {
         });
       }
 
+      // GET / — deck operator console (single static page, no build step).
+      if (method === 'GET' && (url.pathname === '/' || url.pathname === '/deck')) {
+        try {
+          const html = readFileSync(join(publicDir, 'deck.html'));
+          res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
+          res.end(html);
+        } catch {
+          throw new HttpError(404, 'Deck console not found');
+        }
+        return;
+      }
+
+      // POST /meets/import/csv?name=...&laneCount=... — heat sheet as CSV.
+      if (method === 'POST' && url.pathname === '/meets/import/csv') {
+        const name = url.searchParams.get('name');
+        if (!name) throw new HttpError(400, 'name query param required');
+        const csv = await readRawBody(req);
+        let events: ProgramEventInput[];
+        try {
+          events = parseHeatSheetCsv(csv);
+        } catch (err) {
+          throw new HttpError(400, (err as Error).message);
+        }
+        const meet = createMeet(store, {
+          name,
+          date: url.searchParams.get('date') ?? undefined,
+          laneCount: url.searchParams.get('laneCount')
+            ? Number(url.searchParams.get('laneCount'))
+            : undefined,
+          events,
+        });
+        return json(res, 201, meet);
+      }
+
       // POST /meets — import a meet program (heat sheet as JSON).
       if (method === 'POST' && url.pathname === '/meets') {
         const body = (await readBody(req)) as ProgramInput;
         if (!body.name || !Array.isArray(body.events)) {
           throw new HttpError(400, 'Meet requires name and events[]');
         }
-        const laneCount = body.laneCount ?? 8;
-        const events: SwimEvent[] = body.events.map((ev) => ({
-          number: ev.number,
-          name: ev.name,
-          heats: ev.heats.map((h) => ({
-            number: h.number,
-            entries: h.entries.map((e) => ({
-              swimmerId: store.upsertSwimmer(e.swimmer.name, e.swimmer.team, e.swimmer.age).id,
-              lane: e.lane,
-              seedTime: e.seedTime,
-            })),
-            touches: {},
-          })),
-        }));
-        try {
-          validateProgram(events, laneCount);
-        } catch (err) {
-          throw new HttpError(400, (err as Error).message);
-        }
-        const meet: Meet = {
-          id: store.newId(),
-          name: body.name,
-          date: body.date,
-          laneCount,
-          events,
-          currentHeatIndex: -1,
-        };
-        store.meets.set(meet.id, meet);
-        store.persist();
-        return json(res, 201, meet);
+        return json(res, 201, createMeet(store, body));
       }
 
       // GET /meets

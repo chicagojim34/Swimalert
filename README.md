@@ -19,15 +19,22 @@ Built from three ideas:
 
 ```
 server/          TypeScript backend — the brain (fully tested, zero runtime deps)
+server/public/   Deck console — zero-install web UI for running the meet
 mobile/          Expo (React Native) app — parent alerts + iPhone lane camera
 capture-agent/   Node agent for MTP/PTP cameras (gphoto2) on a laptop "capture station"
 ```
 
 ### `server/` — meet engine, alerts, timing, camera sync
 
-* **Meet program model** — events → heats → lane entries, imported as JSON (a heat sheet).
+* **Meet program model** — events → heats → lane entries, imported as JSON or CSV.
   A deck operator advances the current heat (`POST /meets/:id/advance`) or jumps around
   (`POST /meets/:id/position`) as the meet actually runs.
+* **CSV heat-sheet import** (`src/heatsheet.ts`) — `POST /meets/import/csv?name=...` with a
+  flat "one row per entry" CSV (`Event, Event Name, Heat, Lane, Swimmer, Team, Seed, Age`;
+  common header aliases accepted). Anything Meet Manager or a spreadsheet can export works.
+* **Deck console** (`public/deck.html`) — open `http://<server>:4000/` on any laptop or
+  tablet at the pool: import a CSV, advance heats, fire the horn, tap touches per lane,
+  and watch unofficial times and parent-alert counts stream in live. No install, no build.
 * **Alert engine** (`src/alerts.ts`) — on every heat change, computes how many races away
   each followed swimmer is and pushes when they cross the follow's threshold. Deduped per
   entry, supports multiple parents per swimmer. Ships with an Expo push sender
@@ -101,7 +108,7 @@ curl localhost:4000/meets/$MEET_ID/clips
 
 ## Where this goes next
 
-* **Heat sheet import** — parse Hy-Tek Meet Manager / Meet Mobile exports instead of raw JSON.
+* **Native heat-sheet formats** — parse Hy-Tek HY3/SDIF exports directly, beyond CSV.
 * **Horn detection** — detect the strobe/horn from the camera's own A/V instead of a manual
   tap, so timing needs zero deck cooperation.
 * **Touch detection** — computer vision on the lane camera for the wall touch (the manual

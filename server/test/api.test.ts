@@ -167,6 +167,42 @@ test('SSE stream delivers horn and touch events to subscribed cameras', async ()
   controller.abort();
 });
 
+test('CSV heat-sheet import creates a meet with deduped swimmers', async () => {
+  const csv = [
+    'Event,Event Name,Heat,Lane,Swimmer,Team,Seed',
+    '1,Girls 100 IM,1,3,Ivy Q,ORCAS,1:15.00',
+    '1,Girls 100 IM,1,4,June W,ORCAS,1:14.20',
+    '2,Girls 50 Fly,1,4,Ivy Q,ORCAS,',
+  ].join('\n');
+  const res = await fetch(`${base}/meets/import/csv?name=CSV%20Meet&laneCount=6`, {
+    method: 'POST',
+    headers: { 'content-type': 'text/csv' },
+    body: csv,
+  });
+  const meet = await res.json();
+  assert.equal(res.status, 201);
+  assert.equal(meet.name, 'CSV Meet');
+  assert.equal(meet.laneCount, 6);
+  assert.equal(meet.events.length, 2);
+  // Ivy appears in both events as the same swimmer record.
+  assert.equal(meet.events[0].heats[0].entries[0].swimmerId, meet.events[1].heats[0].entries[0].swimmerId);
+
+  // Bad CSV -> 400 with the parser's message.
+  const bad = await fetch(`${base}/meets/import/csv?name=Bad`, {
+    method: 'POST',
+    body: 'heat,lane,name\n1,1,A',
+  });
+  assert.equal(bad.status, 400);
+  assert.match((await bad.json()).error, /missing a "event" column/);
+});
+
+test('deck console is served at /', async () => {
+  const res = await fetch(`${base}/`);
+  assert.equal(res.status, 200);
+  assert.match(res.headers.get('content-type') ?? '', /text\/html/);
+  assert.match(await res.text(), /Deck Console/);
+});
+
 test('validation errors surface as 400s', async () => {
   await assert.rejects(
     api('POST', '/meets', {
