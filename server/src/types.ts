@@ -55,18 +55,52 @@ export interface Follow {
   alertedKeys: string[];
 }
 
-export type CameraKind = 'phone' | 'mtp';
+export type CameraKind = 'phone' | 'mtp' | 'wide';
 
-/** A camera (phone or MTP capture station) assigned to a lane for a meet. */
+/**
+ * A crop region within a camera's frame, normalized 0..1 (so it works at any
+ * resolution). Used to cut a per-lane view out of a single wide shot —
+ * the soccer-camera model applied to a pool.
+ */
+export interface CropRect {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+}
+
+/**
+ * A camera assigned to one or more lanes for a meet. A phone on the fence
+ * covers one lane; a wide end-of-pool camera covers all of them, with a
+ * per-lane crop for digital zoom.
+ */
 export interface CameraRegistration {
   deviceId: string;
   meetId: string;
-  lane: number;
+  lanes: number[];
   kind: CameraKind;
   label?: string;
+  /** Per-lane crop regions within this camera's frame (omit for full frame). */
+  crops?: Record<number, CropRect>;
   /** Client-estimated clock offset vs server (ms), reported after timesync. */
   clockOffsetMs?: number;
   registeredAt: number;
+}
+
+/** A continuous source recording uploaded/registered by a camera; clips are cut from these. */
+export interface SourceVideo {
+  id: string;
+  meetId: string;
+  deviceId: string;
+  /** Server-clock time of the video's first frame. */
+  startTs: number;
+  /** Server-clock end (set when the recording stops/uploads). */
+  endTs?: number;
+  /** Absolute path on the server, when the file was uploaded here. */
+  path?: string;
+  /** External location when not uploaded (e.g. still on the capture device). */
+  uri?: string;
+  createdAt: number;
 }
 
 /** Metadata for a recorded clip (video files live on the capture device or blob storage). */
@@ -81,8 +115,12 @@ export interface Clip {
   /** Server-clock window the clip covers. */
   startTs: number;
   endTs: number;
-  /** Where the video can be fetched from (device-local path or upload URL). */
+  /** Where the video can be fetched from (server route or device-local reference). */
   uri?: string;
+  /** Absolute path of the generated clip file on the server, when it lives here. */
+  path?: string;
+  /** Source video this clip was cut from, when generated server-side. */
+  sourceVideoId?: string;
   /** Unofficial horn-to-touch time in ms, if timing was captured. */
   unofficialMs?: number;
   createdAt: number;

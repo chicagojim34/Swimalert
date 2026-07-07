@@ -34,7 +34,7 @@ capture-agent/   Node agent for MTP/PTP cameras (gphoto2) on a laptop "capture s
   common header aliases accepted). Anything Meet Manager or a spreadsheet can export works.
 * **Deck console** (`public/deck.html`) — open `http://<server>:4000/` on any laptop or
   tablet at the pool: import a CSV, advance heats, fire the horn, tap touches per lane,
-  and watch unofficial times and parent-alert counts stream in live. No install, no build.
+  generate clips for the heat, and play every clip inline. No install, no build.
 * **Alert engine** (`src/alerts.ts`) — on every heat change, computes how many races away
   each followed swimmer is and pushes when they cross the follow's threshold. Deduped per
   entry, supports multiple parents per swimmer. Ships with an Expo push sender
@@ -48,8 +48,19 @@ capture-agent/   Node agent for MTP/PTP cameras (gphoto2) on a laptop "capture s
 * **Live stream** — `GET /meets/:id/stream` is a Server-Sent Events feed of
   `position` / `horn` / `touch` / `clip` events. Cameras use it to auto-start when a heat
   goes up and auto-stop after their lane touches.
-* **Clip registry** — cameras report finished clips (`POST /clips`); the server attaches
-  the swimmer in that lane and the unofficial time.
+* **Multi-lane cameras** — a camera registers for one lane (phone on the fence) or a
+  range (`lanes: "1-8"` — a wide end-of-pool shot, the soccer-camera model). Wide cameras
+  get per-lane crop regions (auto-split into columns, or send measured crops) so one
+  camera produces a digitally-zoomed view of every lane.
+* **Real clip generation** (`src/clipper.ts`, requires ffmpeg) — cameras upload their
+  recording (`POST /videos/upload`) with a timesynced start timestamp; the server cuts
+  each lane's horn-to-touch clip from it (`POST .../generate-clips`): time-sliced with
+  pre/post-roll, cropped to the lane's slice of the frame, tagged with the swimmer and
+  unofficial time, and streamed back Range-aware (`GET /clips/:id/video`) so browsers
+  can scrub. Single-lane full-frame clips are lossless stream copies; cropped lane
+  clips re-encode just that column of pixels.
+* **Clip registry** — generated clips (and externally-reported ones via `POST /clips`)
+  are listed per meet with swimmer and time attached.
 
 ```bash
 npm install
@@ -87,9 +98,14 @@ the camera on USB, and [gphoto2](http://gphoto.org/) does the capture.
 node capture-agent/agent.mjs --server http://localhost:4000 --meet <meetId> --lane 4
 ```
 
-Same protocol as the phone: timesync → register on a lane → listen to the SSE stream →
-record horn-to-touch → report the clip. Runs in dry-run mode without gphoto2 so you can
-test the plumbing anywhere.
+```bash
+# soccer-style: one wide camera covering the whole pool
+node capture-agent/agent.mjs --server http://localhost:4000 --meet <meetId> --lanes 1-8
+```
+
+Same protocol as the phone: timesync → register lanes → listen to the SSE stream →
+record → upload the take → the server cuts per-lane clips (cropped per lane for a wide
+camera). Runs in dry-run mode without gphoto2 so you can test the plumbing anywhere.
 
 ## Try a full meet day in 60 seconds
 
@@ -113,8 +129,10 @@ curl localhost:4000/meets/$MEET_ID/clips
   tap, so timing needs zero deck cooperation.
 * **Touch detection** — computer vision on the lane camera for the wall touch (the manual
   tap works today, like GameChanger's scorekeeper role).
-* **Multi-camera stitching** — the synchronized clocks already make cross-camera cuts
-  possible; add an end-of-pool camera and pick the best view per race segment.
-* **Clip upload + sharing** — clips currently live on the capture device; add blob storage
-  upload and family sharing links.
+* **Multi-camera stitching** — clips from different cameras of the same lane are already
+  on one clock; add a "best view" picker that cuts between end and side angles mid-race.
+* **Smarter lane crops** — perspective-corrected crop paths (lanes converge toward the far
+  end of the pool) and swimmer tracking within the lane, instead of straight columns.
+* **Clip sharing** — clips now live on the server; add family share links, downloads,
+  and cloud storage for full meets.
 * **Auth + teams** — accounts, rosters, and permissions before real meets.

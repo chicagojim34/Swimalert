@@ -6,7 +6,8 @@ const port = Number(process.env.PORT ?? 4000);
 const dataFile = process.env.DATA_FILE ?? 'data/swimalert.json';
 const pushSender = process.env.EXPO_PUSH === '1' ? new ExpoPushSender() : new ConsolePushSender();
 
-const { server } = createApp(new Store(dataFile), pushSender);
+const mediaDir = process.env.MEDIA_DIR ?? 'data/media';
+const { server } = createApp(new Store(dataFile), pushSender, { mediaDir });
 
 server.listen(port, () => {
   console.log(`Swimalert server listening on http://localhost:${port}`);

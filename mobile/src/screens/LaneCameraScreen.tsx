@@ -45,22 +45,26 @@ export function LaneCameraScreen({ meetId }: { meetId: string }) {
       setRecording(false);
       const race = raceRef.current;
       if (!video?.uri || !race || lane === null) return;
-      // Ask the server for the ideal horn->touch window; report our clip.
+      // Upload the whole take; the server cuts the precise horn->touch clip
+      // (and can re-cut later — e.g. different pre/post-roll) from it.
       try {
-        const w = await api.clipWindow(meetId, race.eventNumber, race.heatNumber, lane);
-        await api.reportClip({
+        setStatus('Uploading recording…');
+        await api.uploadVideo({
           meetId,
-          eventNumber: race.eventNumber,
-          heatNumber: race.heatNumber,
-          lane,
           deviceId: DEVICE_ID,
-          startTs: Math.max(w.startTs, recordingStartServerTs.current),
-          endTs: w.endTs,
-          uri: video.uri,
+          startTs: recordingStartServerTs.current,
+          endTs: serverNow(),
+          fileUri: video.uri,
         });
-        setStatus(`Clip saved for E${race.eventNumber} H${race.heatNumber}`);
+        const { results } = await api.generateClips(meetId, race.eventNumber, race.heatNumber, [lane]);
+        const mine = results.find((r: any) => r.lane === lane);
+        setStatus(
+          mine?.status === 'generated'
+            ? `Clip ready for E${race.eventNumber} H${race.heatNumber} 🎬`
+            : `Uploaded; clip pending (${mine?.reason ?? 'unknown'})`,
+        );
       } catch (e) {
-        setStatus(`Clip recorded but not reported: ${e}`);
+        setStatus(`Recorded but upload failed: ${e}`);
       }
     });
   };

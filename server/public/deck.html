@@ -66,10 +66,16 @@
     <div class="row" style="margin-top:14px">
       <button class="primary" id="advanceBtn">Start meet ▶</button>
       <button class="horn" id="hornBtn" disabled>📯 HORN</button>
+      <button id="clipsBtn" disabled>🎬 Generate clips</button>
     </div>
     <table id="laneTable"><thead>
       <tr><th>Lane</th><th>Swimmer</th><th>Seed</th><th>Touch</th></tr>
     </thead><tbody></tbody></table>
+  </section>
+
+  <section class="card hide" id="clipsCard">
+    <h2>Clips</h2>
+    <div id="clipsGrid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:12px"></div>
   </section>
 
   <section class="card hide" id="logCard">
@@ -137,7 +143,36 @@ async function selectMeet(id) {
   es.addEventListener('clip', (e) => {
     const d = JSON.parse(e.data);
     log(`🎬 Clip saved: E${d.eventNumber} H${d.heatNumber} lane ${d.lane}`);
+    addClipCard(d);
   });
+  loadClips();
+}
+
+async function loadClips() {
+  const clips = await api('GET', `/meets/${meet.id}/clips`);
+  $('clipsGrid').innerHTML = '';
+  clips.sort((a, b) => b.createdAt - a.createdAt).forEach(addClipCard);
+}
+
+function fmtTime(ms) {
+  if (ms == null) return '';
+  const total = Math.round(ms / 10), h = total % 100, s = Math.floor(total / 100) % 60, m = Math.floor(total / 6000);
+  const hh = String(h).padStart(2, '0');
+  return m ? `${m}:${String(s).padStart(2, '0')}.${hh}` : `${s}.${hh}`;
+}
+
+function addClipCard(clip) {
+  $('clipsCard').classList.remove('hide');
+  const sw = swimmers[clip.swimmerId];
+  const div = document.createElement('div');
+  div.style.cssText = 'border:1px solid #edf1f6;border-radius:10px;padding:10px';
+  const playable = clip.uri && clip.uri.startsWith('/clips/');
+  div.innerHTML = `
+    ${playable ? `<video src="${clip.uri}" controls preload="metadata" style="width:100%;border-radius:8px;background:#000"></video>` : ''}
+    <div style="margin-top:6px;font-weight:600">${sw ? sw.name : `Lane ${clip.lane}`}</div>
+    <div style="color:var(--mut);font-size:13px">E${clip.eventNumber} H${clip.heatNumber} · Lane ${clip.lane}
+      ${clip.unofficialMs ? `· <span class="time">${fmtTime(clip.unofficialMs)}</span>` : ''}</div>`;
+  $('clipsGrid').prepend(div);
 }
 
 function currentFlat() {
@@ -150,6 +185,7 @@ function render() {
   const started = meet.currentHeatIndex >= 0;
   $('advanceBtn').textContent = started ? 'Next heat ▶' : 'Start meet ▶';
   $('hornBtn').disabled = !cur;
+  $('clipsBtn').disabled = !cur;
   $('currentEvent').textContent = cur
     ? `Event ${cur.eventNumber}: ${cur.eventName}`
     : started ? 'Meet finished 🎉' : 'Not started';
@@ -203,6 +239,19 @@ $('advanceBtn').onclick = async () => { await api('POST', `/meets/${meet.id}/adv
 $('hornBtn').onclick = async () => {
   const c = currentFlat();
   await api('POST', `/meets/${meet.id}/events/${c.eventNumber}/heats/${c.heatNumber}/horn`, {});
+};
+$('clipsBtn').onclick = async () => {
+  const c = currentFlat();
+  $('clipsBtn').disabled = true;
+  try {
+    const { results } = await api('POST',
+      `/meets/${meet.id}/events/${c.eventNumber}/heats/${c.heatNumber}/generate-clips`, {});
+    const made = results.filter((r) => r.status === 'generated').length;
+    log(`Clip generation: ${made} created, ${results.length - made} skipped`);
+    results.filter((r) => r.status !== 'generated')
+      .forEach((r) => log(`  lane ${r.lane}: ${r.reason}`));
+  } catch (err) { alert(err.message); }
+  $('clipsBtn').disabled = false;
 };
 $('importBtn').onclick = async () => {
   const file = $('csvFile').files[0];

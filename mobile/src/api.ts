@@ -34,6 +34,26 @@ export const api = {
     endTs: number;
     uri: string;
   }) => request('POST', '/clips', clip),
+  /** Upload the raw recording; the server cuts precise horn-to-touch clips from it. */
+  uploadVideo: async (params: {
+    meetId: string;
+    deviceId: string;
+    startTs: number;
+    endTs: number;
+    fileUri: string;
+  }) => {
+    const blob = await (await fetch(params.fileUri)).blob();
+    const res = await fetch(
+      `${SERVER_URL}/videos/upload?meetId=${params.meetId}&deviceId=${params.deviceId}` +
+        `&startTs=${params.startTs}&endTs=${params.endTs}&ext=mp4`,
+      { method: 'POST', body: blob },
+    );
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error ?? `HTTP ${res.status}`);
+    return data;
+  },
+  generateClips: (meetId: string, ev: number, heat: number, lanes?: number[]) =>
+    request('POST', `/meets/${meetId}/events/${ev}/heats/${heat}/generate-clips`, { lanes }),
   timesyncOnce: async () => {
     const clientSendTs = Date.now();
     const s = await request('POST', '/timesync', { clientSendTs });

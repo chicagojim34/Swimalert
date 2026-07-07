@@ -6,14 +6,21 @@
  * cameras on tripods.
  *
  * Usage:
- *   node agent.mjs --server http://localhost:4000 --meet <meetId> --lane 4 [--out ./clips]
+ *   # phone-style: one camera, one lane
+ *   node agent.mjs --server http://localhost:4000 --meet <meetId> --lane 4
+ *   # soccer-style: one wide camera covering every lane, per-lane digital crops
+ *   node agent.mjs --server http://localhost:4000 --meet <meetId> --lanes 1-8
+ *
+ * After each race the agent uploads its recording to the server and asks it
+ * to generate clips — with a multi-lane camera that's one clip per lane,
+ * cropped to that lane's slice of the frame.
  *
  * Requires gphoto2 on PATH for actual capture (`apt install gphoto2` /
  * `brew install gphoto2`). Without it the agent runs in dry-run mode and
  * logs what it would do — handy for testing the sync/stream plumbing.
  */
 import { spawn, spawnSync } from 'node:child_process';
-import { createWriteStream, mkdirSync } from 'node:fs';
+import { createWriteStream, mkdirSync, readFileSync, existsSync } from 'node:fs';
 import { hostname } from 'node:os';
 
 const args = Object.fromEntries(
@@ -21,13 +28,18 @@ const args = Object.fromEntries(
 );
 const SERVER = args.server ?? 'http://localhost:4000';
 const MEET_ID = args.meet;
-const LANE = Number(args.lane);
+const LANES = args.lanes
+  ? args.lanes // range string like "1-8" or comma list
+  : args.lane !== undefined
+    ? [Number(args.lane)]
+    : null;
 const OUT_DIR = args.out ?? './clips';
-const DEVICE_ID = `mtp-${hostname()}-lane${LANE}`;
+const laneLabel = typeof LANES === 'string' ? LANES.replace(/[^0-9-]/g, '') : LANES?.[0];
+const DEVICE_ID = `mtp-${hostname()}-lanes${laneLabel}`;
 const POST_ROLL_MS = 4000;
 
-if (!MEET_ID || !Number.isInteger(LANE)) {
-  console.error('Usage: node agent.mjs --server URL --meet MEET_ID --lane N [--out DIR]');
+if (!MEET_ID || LANES === null) {
+  console.error('Usage: node agent.mjs --server URL --meet MEET_ID (--lane N | --lanes 1-8) [--out DIR]');
   process.exit(1);
 }
 
@@ -64,14 +76,24 @@ let clockOffsetMs = await syncClock();
 const serverNow = () => Date.now() + clockOffsetMs;
 console.log(`Clock synced: offset ${clockOffsetMs.toFixed(1)}ms vs server`);
 
-await post('/cameras', { deviceId: DEVICE_ID, meetId: MEET_ID, lane: LANE, kind: 'mtp', clockOffsetMs });
-console.log(`Registered ${DEVICE_ID} on lane ${LANE}`);
+const registration = await post('/cameras', {
+  deviceId: DEVICE_ID,
+  meetId: MEET_ID,
+  ...(typeof LANES === 'string' ? { lanes: LANES } : { lane: LANES[0] }),
+  kind: typeof LANES === 'string' ? 'wide' : 'mtp',
+  clockOffsetMs,
+});
+const coveredLanes = registration.lanes;
+console.log(`Registered ${DEVICE_ID} covering lane(s) ${coveredLanes.join(', ')}`);
+if (registration.crops) {
+  console.log(`Per-lane crops active: ${Object.keys(registration.crops).length} regions (wide-camera mode)`);
+}
 
 let capture = null; // { proc, file, startServerTs, race }
 
 function startCapture(race) {
   if (capture) return;
-  const file = `${OUT_DIR}/e${race.eventNumber}h${race.heatNumber}-lane${LANE}.mjpg`;
+  const file = `${OUT_DIR}/e${race.eventNumber}h${race.heatNumber}-lanes${laneLabel}.mjpg`;
   const startServerTs = serverNow();
   const proc = hasGphoto2
     ? spawn('gphoto2', ['--capture-movie', `--stdout`], { stdio: ['ignore', 'pipe', 'inherit'] })
@@ -88,20 +110,36 @@ async function stopCapture() {
   proc?.kill('SIGINT');
   const endServerTs = serverNow();
   console.log(`■ stopped E${race.eventNumber} H${race.heatNumber}`);
+
+  if (!existsSync(file)) {
+    console.log('  dry-run: no video file to upload');
+    return;
+  }
   try {
-    const clip = await post('/clips', {
-      meetId: MEET_ID,
-      eventNumber: race.eventNumber,
-      heatNumber: race.heatNumber,
-      lane: LANE,
-      deviceId: DEVICE_ID,
-      startTs: startServerTs,
-      endTs: endServerTs,
-      uri: `file://${file}`,
-    });
-    console.log(`  clip reported (${clip.id})${clip.unofficialMs ? ` — unofficial ${clip.unofficialMs}ms` : ''}`);
+    // Upload the whole recording, then let the server cut per-lane clips
+    // (cropped per lane when this is a wide camera).
+    const uploadRes = await fetch(
+      `${SERVER}/videos/upload?meetId=${MEET_ID}&deviceId=${DEVICE_ID}` +
+        `&startTs=${startServerTs}&endTs=${endServerTs}&ext=mjpg`,
+      { method: 'POST', body: readFileSync(file) },
+    );
+    const video = await uploadRes.json();
+    if (!uploadRes.ok) throw new Error(video.error);
+    console.log(`  uploaded recording (${(video.bytes / 1e6).toFixed(1)} MB)`);
+
+    const { results } = await post(
+      `/meets/${MEET_ID}/events/${race.eventNumber}/heats/${race.heatNumber}/generate-clips`,
+      { lanes: coveredLanes },
+    );
+    for (const r of results) {
+      if (r.status === 'generated') {
+        console.log(`  🎬 lane ${r.lane}: clip ready${r.clip.unofficialMs ? ` — ${r.clip.unofficialMs}ms unofficial` : ''}`);
+      } else {
+        console.log(`  lane ${r.lane}: ${r.status} (${r.reason ?? ''})`);
+      }
+    }
   } catch (err) {
-    console.error('  clip report failed:', err.message);
+    console.error('  upload/clip generation failed:', err.message);
   }
 }
 
@@ -127,13 +165,20 @@ for await (const chunk of res.body) {
     const type = typeMatch[1];
     const data = JSON.parse(dataMatch[1]);
 
-    if (type === 'position' && data.current) {
-      startCapture({ eventNumber: data.current.eventNumber, heatNumber: data.current.heatNumber });
+    if (type === 'position') {
+      // Deck moved on: finish (and upload) the previous heat's recording,
+      // then roll for the new one. This is also how a multi-lane camera
+      // knows the whole heat is over without tracking every lane's touch.
+      await stopCapture();
+      if (data.current) {
+        startCapture({ eventNumber: data.current.eventNumber, heatNumber: data.current.heatNumber });
+      }
     } else if (type === 'horn') {
       startCapture({ eventNumber: data.eventNumber, heatNumber: data.heatNumber });
-    } else if (type === 'touch' && data.lane === LANE) {
-      console.log(`  touch on lane ${LANE}${data.unofficial ? ` — ${data.unofficial} (unofficial)` : ''}`);
-      setTimeout(stopCapture, POST_ROLL_MS);
+    } else if (type === 'touch' && coveredLanes.includes(data.lane)) {
+      console.log(`  touch on lane ${data.lane}${data.unofficial ? ` — ${data.unofficial} (unofficial)` : ''}`);
+      // Single-lane camera: our race is done, cut after the post-roll.
+      if (coveredLanes.length === 1) setTimeout(stopCapture, POST_ROLL_MS);
     }
   }
 }

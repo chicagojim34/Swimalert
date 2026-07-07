@@ -1,7 +1,7 @@
 import { mkdirSync, readFileSync, writeFileSync, existsSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { randomUUID } from 'node:crypto';
-import type { CameraRegistration, Clip, Follow, Meet, Swimmer } from './types.js';
+import type { CameraRegistration, Clip, Follow, Meet, SourceVideo, Swimmer } from './types.js';
 
 interface StoreData {
   meets: Meet[];
@@ -9,6 +9,7 @@ interface StoreData {
   follows: Follow[];
   cameras: CameraRegistration[];
   clips: Clip[];
+  videos: SourceVideo[];
 }
 
 /**
@@ -22,6 +23,7 @@ export class Store {
   follows = new Map<string, Follow>();
   cameras = new Map<string, CameraRegistration>();
   clips = new Map<string, Clip>();
+  videos = new Map<string, SourceVideo>();
 
   constructor(private filePath?: string) {
     if (filePath && existsSync(filePath)) this.load(filePath);
@@ -49,6 +51,10 @@ export class Store {
     return [...this.clips.values()].filter((c) => c.meetId === meetId);
   }
 
+  videosForMeet(meetId: string): SourceVideo[] {
+    return [...this.videos.values()].filter((v) => v.meetId === meetId);
+  }
+
   persist(): void {
     if (!this.filePath) return;
     const data: StoreData = {
@@ -57,6 +63,7 @@ export class Store {
       follows: [...this.follows.values()],
       cameras: [...this.cameras.values()],
       clips: [...this.clips.values()],
+      videos: [...this.videos.values()],
     };
     mkdirSync(dirname(this.filePath), { recursive: true });
     writeFileSync(this.filePath, JSON.stringify(data, null, 2));
@@ -69,5 +76,6 @@ export class Store {
     for (const f of data.follows ?? []) this.follows.set(f.id, f);
     for (const c of data.cameras ?? []) this.cameras.set(c.deviceId, c);
     for (const c of data.clips ?? []) this.clips.set(c.id, c);
+    for (const v of data.videos ?? []) this.videos.set(v.id, v);
   }
 }
