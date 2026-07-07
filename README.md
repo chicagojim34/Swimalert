@@ -61,6 +61,10 @@ capture-agent/   Node agent for MTP/PTP cameras (gphoto2) on a laptop "capture s
   clips re-encode just that column of pixels.
 * **Clip registry** — generated clips (and externally-reported ones via `POST /clips`)
   are listed per meet with swimmer and time attached.
+* **Share links + clip-ready pushes** — every generated clip gets an unguessable
+  `/share/:token` page (video, swimmer, unofficial time — no login), and everyone
+  following that swimmer gets a "🎬 race clip is ready" push with the link seconds
+  after the touch. The deck console has a copy-link button on every clip.
 
 ```bash
 npm install
@@ -133,6 +137,6 @@ curl localhost:4000/meets/$MEET_ID/clips
   on one clock; add a "best view" picker that cuts between end and side angles mid-race.
 * **Smarter lane crops** — perspective-corrected crop paths (lanes converge toward the far
   end of the pool) and swimmer tracking within the lane, instead of straight columns.
-* **Clip sharing** — clips now live on the server; add family share links, downloads,
-  and cloud storage for full meets.
+* **Cloud storage** — clips and share pages live on the meet server today; add object
+  storage + a hosted domain so links outlive the pool-deck laptop.
 * **Auth + teams** — accounts, rosters, and permissions before real meets.

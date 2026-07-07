@@ -171,7 +171,8 @@ function addClipCard(clip) {
     ${playable ? `<video src="${clip.uri}" controls preload="metadata" style="width:100%;border-radius:8px;background:#000"></video>` : ''}
     <div style="margin-top:6px;font-weight:600">${sw ? sw.name : `Lane ${clip.lane}`}</div>
     <div style="color:var(--mut);font-size:13px">E${clip.eventNumber} H${clip.heatNumber} · Lane ${clip.lane}
-      ${clip.unofficialMs ? `· <span class="time">${fmtTime(clip.unofficialMs)}</span>` : ''}</div>`;
+      ${clip.unofficialMs ? `· <span class="time">${fmtTime(clip.unofficialMs)}</span>` : ''}</div>
+    ${clip.shareToken ? `<button style="margin-top:8px;padding:6px 12px" onclick="navigator.clipboard.writeText(location.origin+'/share/${clip.shareToken}');this.textContent='Copied!'">🔗 Share link</button>` : ''}`;
   $('clipsGrid').prepend(div);
 }
 

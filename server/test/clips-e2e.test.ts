@@ -17,9 +17,14 @@ import type { PushSender } from '../src/alerts.js';
  */
 
 const skip = !ffmpegAvailable();
-const noPush: PushSender = { send: async () => {} };
+const pushed: Array<{ deviceToken: string; title: string; body: string }> = [];
+const recordingPush: PushSender = {
+  send: async (m) => {
+    pushed.push({ deviceToken: m.deviceToken, title: m.title, body: m.body });
+  },
+};
 const workDir = mkdtempSync(join(tmpdir(), 'swimalert-clips-'));
-const { server } = createApp(new Store(), noPush, { mediaDir: join(workDir, 'media') });
+const { server } = createApp(new Store(), recordingPush, { mediaDir: join(workDir, 'media') });
 let base = '';
 
 before(async () => {
@@ -82,6 +87,10 @@ test('wide camera covering 4 lanes yields cropped per-lane clips; phone camera y
     }],
   });
 
+  // Grandma follows the lane-2 swimmer so we can verify the clip-ready push.
+  const [l2] = await api('GET', '/swimmers?q=L2');
+  await api('POST', '/follows', { swimmerId: l2.id, deviceToken: 'tok-grandma', racesBefore: 0 });
+
   // One wide camera covers lanes 1-4 (auto column crops); a phone covers lane 5.
   const wide = await api('POST', '/cameras', { deviceId: 'wide-cam', meetId: meet.id, lanes: '1-4', kind: 'wide' });
   assert.deepEqual(wide.lanes, [1, 2, 3, 4]);
@@ -140,6 +149,24 @@ test('wide camera covering 4 lanes yields cropped per-lane clips; phone camera y
   const clips = await api('GET', `/meets/${meet.id}/clips`);
   assert.equal(clips.length, 2);
   assert.ok(clips.every((c: any) => c.path === undefined && c.uri.startsWith('/clips/')));
+
+  // Share link: public page renders swimmer + time, video streams by token.
+  const token = byLane[2].clip.shareToken;
+  assert.ok(token?.length >= 32);
+  const sharePage = await fetch(`${base}/share/${token}`);
+  assert.equal(sharePage.status, 200);
+  const html = await sharePage.text();
+  assert.match(html, /L2's race/);
+  assert.match(html, /1\.00/); // 1000ms unofficial
+  const shareVideo = await fetch(`${base}/share/${token}/video`, { headers: { range: 'bytes=0-49' } });
+  assert.equal(shareVideo.status, 206);
+  assert.equal((await fetch(`${base}/share/nope`)).status, 404);
+
+  // Grandma got the clip-ready push with the share path in it.
+  const clipPush = pushed.find((p) => p.title.includes('race clip is ready'));
+  assert.ok(clipPush, 'expected a clip-ready push');
+  assert.equal(clipPush.deviceToken, 'tok-grandma');
+  assert.match(clipPush.body, new RegExp(`/share/${token}`));
 });
 
 test('generate-clips without a horn is a 409; before any upload lanes are skipped', { skip }, async () => {

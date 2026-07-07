@@ -121,6 +121,8 @@ export interface Clip {
   path?: string;
   /** Source video this clip was cut from, when generated server-side. */
   sourceVideoId?: string;
+  /** Unguessable token for the public share page (/share/:token). */
+  shareToken?: string;
   /** Unofficial horn-to-touch time in ms, if timing was captured. */
   unofficialMs?: number;
   createdAt: number;

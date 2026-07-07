@@ -85,6 +85,47 @@ function createMeet(store: Store, input: ProgramInput): Meet {
 
 const publicDir = join(dirname(fileURLToPath(import.meta.url)), '..', 'public');
 
+function streamVideoFile(path: string, req: IncomingMessage, res: ServerResponse): void {
+  let size: number;
+  try {
+    size = statSync(path).size;
+  } catch {
+    throw new HttpError(404, 'Clip file missing from disk');
+  }
+  const range = req.headers.range?.match(/bytes=(\d*)-(\d*)/);
+  const start = range?.[1] ? Number(range[1]) : 0;
+  const end = range?.[2] ? Math.min(Number(range[2]), size - 1) : size - 1;
+  res.writeHead(range ? 206 : 200, {
+    'content-type': 'video/mp4',
+    'content-length': end - start + 1,
+    'accept-ranges': 'bytes',
+    ...(range ? { 'content-range': `bytes ${start}-${end}/${size}` } : {}),
+    'access-control-allow-origin': '*',
+  });
+  createReadStream(path, { start, end }).pipe(res);
+}
+
+function esc(s: string): string {
+  return s.replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]!);
+}
+
+/** Minimal public page for a shared race clip — what grandma opens from her text message. */
+function sharePage(clip: Clip, swimmerName?: string, team?: string, meetName?: string): string {
+  const title = swimmerName ? `${swimmerName}'s race` : `Lane ${clip.lane} race`;
+  const time = clip.unofficialMs !== undefined ? formatSwimTime(clip.unofficialMs) : undefined;
+  return `<!doctype html><html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>${esc(title)} — Swimalert</title>
+<style>body{margin:0;font-family:system-ui,sans-serif;background:#0e1621;color:#fff;display:flex;flex-direction:column;align-items:center;min-height:100vh;justify-content:center;padding:20px;box-sizing:border-box}
+video{width:100%;max-width:480px;border-radius:14px;background:#000}
+h1{font-size:22px;margin:16px 0 4px}.mut{color:#9ab}.time{color:#4cd47c;font-weight:800;font-size:30px;margin-top:6px}</style></head>
+<body><video src="/share/${clip.shareToken}/video" controls playsinline autoplay muted></video>
+<h1>${esc(title)}</h1>
+<div class="mut">${esc(meetName ?? '')}${team ? ` · ${esc(team)}` : ''} · Event ${clip.eventNumber}, Heat ${clip.heatNumber}, Lane ${clip.lane}</div>
+${time ? `<div class="time">${time}<span style="font-size:13px;color:#9ab;font-weight:400"> unofficial</span></div>` : ''}
+<div class="mut" style="margin-top:24px;font-size:13px">🏊 Recorded with Swimalert</div></body></html>`;
+}
+
 const VIDEO_EXTS = new Set(['mp4', 'mov', 'mkv', 'avi', 'm4v', 'mjpg', 'webm']);
 
 /**
@@ -177,6 +218,33 @@ export function createApp(
       },
       alertsSent: sent.length,
     });
+  }
+
+  /** Tell everyone following this swimmer that the race clip is watchable. */
+  function notifyClipReady(clip: Clip): void {
+    if (!clip.swimmerId) return;
+    const swimmer = store.swimmers.get(clip.swimmerId);
+    if (!swimmer) return;
+    const time = clip.unofficialMs !== undefined ? ` — ${formatSwimTime(clip.unofficialMs)} unofficial` : '';
+    for (const follow of store.follows.values()) {
+      if (follow.swimmerId !== clip.swimmerId) continue;
+      pushSender
+        .send({
+          followId: follow.id,
+          deviceToken: follow.deviceToken,
+          swimmerId: swimmer.id,
+          swimmerName: swimmer.name,
+          meetId: clip.meetId,
+          eventNumber: clip.eventNumber,
+          eventName: '',
+          heatNumber: clip.heatNumber,
+          lane: clip.lane,
+          racesAway: 0,
+          title: `🎬 ${swimmer.name}'s race clip is ready`,
+          body: `Event ${clip.eventNumber}, Heat ${clip.heatNumber}, Lane ${clip.lane}${time} · /share/${clip.shareToken}`,
+        })
+        .catch((err) => console.error(`clip push to ${follow.deviceToken} failed:`, err));
+    }
   }
 
   const server = createServer(async (req, res) => {
@@ -383,23 +451,24 @@ export function createApp(
       if (method === 'GET' && parts[0] === 'clips' && parts[2] === 'video' && parts.length === 3) {
         const clip = store.clips.get(parts[1]);
         if (!clip?.path) throw new HttpError(404, 'Clip video not found on this server');
-        let size: number;
-        try {
-          size = statSync(clip.path).size;
-        } catch {
-          throw new HttpError(404, 'Clip file missing from disk');
+        streamVideoFile(clip.path, req, res);
+        return;
+      }
+
+      // Public share page + its video: /share/:token[/video]. No auth — the
+      // token is the secret, like an unlisted link.
+      if (method === 'GET' && parts[0] === 'share' && parts.length >= 2) {
+        const clip = [...store.clips.values()].find((c) => c.shareToken === parts[1]);
+        if (!clip) throw new HttpError(404, 'Share link not found');
+        if (parts[2] === 'video') {
+          if (!clip.path) throw new HttpError(404, 'Clip video not found on this server');
+          streamVideoFile(clip.path, req, res);
+          return;
         }
-        const range = req.headers.range?.match(/bytes=(\d*)-(\d*)/);
-        const start = range?.[1] ? Number(range[1]) : 0;
-        const end = range?.[2] ? Math.min(Number(range[2]), size - 1) : size - 1;
-        res.writeHead(range ? 206 : 200, {
-          'content-type': 'video/mp4',
-          'content-length': end - start + 1,
-          'accept-ranges': 'bytes',
-          ...(range ? { 'content-range': `bytes ${start}-${end}/${size}` } : {}),
-          'access-control-allow-origin': '*',
-        });
-        createReadStream(clip.path, { start, end }).pipe(res);
+        const swimmer = clip.swimmerId ? store.swimmers.get(clip.swimmerId) : undefined;
+        const meet = store.meets.get(clip.meetId);
+        res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
+        res.end(sharePage(clip, swimmer?.name, swimmer?.team, meet?.name));
         return;
       }
 
@@ -582,12 +651,14 @@ export function createApp(
                 uri: `/clips/${clipId}/video`,
                 path: outPath,
                 sourceVideoId: source.id,
+                shareToken: store.newId().replace(/-/g, ''),
                 unofficialMs: unofficialMs(flat.heat, lane),
                 createdAt: Date.now(),
               };
               store.clips.set(clip.id, clip);
               stream.broadcast(meet.id, 'clip', { ...clip, path: undefined });
               results.push({ lane, status: 'generated', clip: { ...clip, path: undefined } });
+              notifyClipReady(clip);
             }
             store.persist();
             return json(res, 200, { results });
