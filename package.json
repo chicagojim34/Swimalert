@@ -1,0 +1,14 @@
+{
+  "name": "swimalert",
+  "private": true,
+  "version": "0.1.0",
+  "description": "GameChanger for swimming: parent race alerts, synchronized per-lane recording, and unofficial horn-to-touch timing",
+  "workspaces": [
+    "server"
+  ],
+  "scripts": {
+    "dev": "npm run dev --workspace server",
+    "test": "npm test --workspace server",
+    "build": "npm run build --workspace server"
+  }
+}
