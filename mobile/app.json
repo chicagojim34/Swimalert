@@ -1,0 +1,21 @@
+{
+  "expo": {
+    "name": "Swimalert",
+    "slug": "swimalert",
+    "version": "0.1.0",
+    "orientation": "portrait",
+    "userInterfaceStyle": "automatic",
+    "ios": {
+      "bundleIdentifier": "com.swimalert.app",
+      "infoPlist": {
+        "NSCameraUsageDescription": "Swimalert records your swimmer's races from your assigned lane.",
+        "NSMicrophoneUsageDescription": "Race clips include pool audio (horn, cheering)."
+      }
+    },
+    "android": {
+      "package": "com.swimalert.app",
+      "permissions": ["CAMERA", "RECORD_AUDIO", "POST_NOTIFICATIONS"]
+    },
+    "plugins": ["expo-camera", "expo-notifications"]
+  }
+}

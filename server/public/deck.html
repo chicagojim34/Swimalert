@@ -1,0 +1,223 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Swimalert Deck Console</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🏊</text></svg>">
+<style>
+  :root { --blue:#1a73e8; --bg:#f4f7fb; --card:#fff; --ink:#1c2733; --mut:#5b6b7c; --green:#0a7d33; --red:#c62828; }
+  * { box-sizing:border-box; }
+  body { margin:0; font-family:system-ui,-apple-system,sans-serif; background:var(--bg); color:var(--ink); }
+  header { background:var(--blue); color:#fff; padding:14px 20px; display:flex; align-items:center; gap:12px; flex-wrap:wrap; }
+  header h1 { font-size:18px; margin:0; }
+  main { max-width:900px; margin:0 auto; padding:20px; display:grid; gap:16px; }
+  .card { background:var(--card); border-radius:14px; padding:18px; box-shadow:0 1px 3px #0002; }
+  .row { display:flex; gap:10px; align-items:center; flex-wrap:wrap; }
+  select,input,button { font:inherit; padding:10px 14px; border-radius:10px; border:1px solid #cfd8e3; }
+  button { cursor:pointer; border:none; background:#e8eef7; font-weight:600; }
+  button.primary { background:var(--blue); color:#fff; }
+  button.horn { background:var(--red); color:#fff; font-size:18px; }
+  button:disabled { opacity:.45; cursor:default; }
+  #currentEvent { font-size:15px; color:var(--mut); }
+  #currentHeat { font-size:34px; font-weight:800; color:var(--blue); }
+  #raceClock { font-variant-numeric:tabular-nums; font-size:28px; font-weight:700; }
+  table { width:100%; border-collapse:collapse; margin-top:10px; }
+  th,td { text-align:left; padding:8px 10px; border-bottom:1px solid #edf1f6; }
+  th { color:var(--mut); font-size:12px; text-transform:uppercase; letter-spacing:.05em; }
+  td .touchbtn { padding:6px 14px; }
+  .time { color:var(--green); font-weight:700; font-variant-numeric:tabular-nums; }
+  #log { max-height:220px; overflow-y:auto; font:13px/1.6 ui-monospace,monospace; color:var(--mut); }
+  .hide { display:none; }
+  h2 { font-size:15px; margin:0 0 10px; color:var(--mut); text-transform:uppercase; letter-spacing:.05em; }
+</style>
+</head>
+<body>
+<header>
+  <h1>🏊 Swimalert — Deck Console</h1>
+  <select id="meetSelect"></select>
+  <button id="reloadMeets">↻</button>
+</header>
+<main>
+  <section class="card" id="importCard">
+    <h2>Import heat sheet (CSV)</h2>
+    <div class="row">
+      <input id="meetName" placeholder="Meet name" style="flex:1;min-width:160px">
+      <input id="laneCount" type="number" value="8" min="1" max="10" style="width:80px" title="Lanes">
+      <input id="csvFile" type="file" accept=".csv,text/csv">
+      <button class="primary" id="importBtn">Import</button>
+    </div>
+    <p style="color:var(--mut);font-size:13px;margin:10px 0 0">
+      Columns: <code>Event, Event Name, Heat, Lane, Swimmer, Team, Seed</code> (header aliases accepted).
+    </p>
+  </section>
+
+  <section class="card hide" id="raceCard">
+    <div class="row" style="justify-content:space-between">
+      <div>
+        <div id="currentEvent">Not started</div>
+        <div id="currentHeat">—</div>
+      </div>
+      <div style="text-align:right">
+        <div id="raceClock">0.0</div>
+        <div style="color:var(--mut);font-size:12px">unofficial</div>
+      </div>
+    </div>
+    <div class="row" style="margin-top:14px">
+      <button class="primary" id="advanceBtn">Start meet ▶</button>
+      <button class="horn" id="hornBtn" disabled>📯 HORN</button>
+    </div>
+    <table id="laneTable"><thead>
+      <tr><th>Lane</th><th>Swimmer</th><th>Seed</th><th>Touch</th></tr>
+    </thead><tbody></tbody></table>
+  </section>
+
+  <section class="card hide" id="logCard">
+    <h2>Live feed</h2>
+    <div id="log"></div>
+  </section>
+</main>
+<script>
+const $ = (id) => document.getElementById(id);
+let meet = null, swimmers = {}, es = null, clockTimer = null, hornAt = null;
+
+const api = async (method, path, body, raw) => {
+  const res = await fetch(path, {
+    method,
+    headers: raw ? { 'content-type': 'text/csv' } : { 'content-type': 'application/json' },
+    body: body === undefined ? undefined : (raw ? body : JSON.stringify(body)),
+  });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error || res.status);
+  return data;
+};
+
+const log = (msg) => {
+  const line = document.createElement('div');
+  line.textContent = `${new Date().toLocaleTimeString()}  ${msg}`;
+  $('log').prepend(line);
+  $('logCard').classList.remove('hide');
+};
+
+async function loadMeets(selectId) {
+  const meets = await api('GET', '/meets');
+  $('meetSelect').innerHTML = '<option value="">— pick a meet —</option>' +
+    meets.map((m) => `<option value="${m.id}">${m.name}</option>`).join('');
+  if (selectId) { $('meetSelect').value = selectId; selectMeet(selectId); }
+}
+
+async function selectMeet(id) {
+  if (es) { es.close(); es = null; }
+  if (!id) { meet = null; $('raceCard').classList.add('hide'); return; }
+  const all = await api('GET', '/swimmers');
+  swimmers = Object.fromEntries(all.map((s) => [s.id, s]));
+  meet = await api('GET', `/meets/${id}`);
+  $('raceCard').classList.remove('hide');
+  render();
+  es = new EventSource(`/meets/${id}/stream`);
+  es.addEventListener('position', async (e) => {
+    const d = JSON.parse(e.data);
+    meet = await api('GET', `/meets/${id}`);
+    stopClock();
+    render();
+    if (d.alertsSent) log(`📣 ${d.alertsSent} parent alert${d.alertsSent > 1 ? 's' : ''} sent`);
+    log(d.current ? `Up: Event ${d.current.eventNumber} Heat ${d.current.heatNumber}` : 'Meet finished');
+  });
+  es.addEventListener('horn', (e) => {
+    const d = JSON.parse(e.data);
+    hornAt = d.ts;
+    startClock();
+    log(`📯 Horn — Event ${d.eventNumber} Heat ${d.heatNumber}`);
+  });
+  es.addEventListener('touch', (e) => {
+    const d = JSON.parse(e.data);
+    if (d.unofficial) setLaneTime(d.lane, d.unofficial);
+    log(`Lane ${d.lane} touch${d.unofficial ? ` — ${d.unofficial}` : ''}`);
+  });
+  es.addEventListener('clip', (e) => {
+    const d = JSON.parse(e.data);
+    log(`🎬 Clip saved: E${d.eventNumber} H${d.heatNumber} lane ${d.lane}`);
+  });
+}
+
+function currentFlat() {
+  if (!meet || !meet.current) return null;
+  return meet.current;
+}
+
+function render() {
+  const cur = currentFlat();
+  const started = meet.currentHeatIndex >= 0;
+  $('advanceBtn').textContent = started ? 'Next heat ▶' : 'Start meet ▶';
+  $('hornBtn').disabled = !cur;
+  $('currentEvent').textContent = cur
+    ? `Event ${cur.eventNumber}: ${cur.eventName}`
+    : started ? 'Meet finished 🎉' : 'Not started';
+  $('currentHeat').textContent = cur ? `Heat ${cur.heatNumber}` : '—';
+  $('raceClock').textContent = '0.0';
+  const tbody = $('laneTable').querySelector('tbody');
+  tbody.innerHTML = '';
+  if (!cur) return;
+  const entriesByLane = Object.fromEntries(cur.heat.entries.map((e) => [e.lane, e]));
+  for (let lane = 1; lane <= meet.laneCount; lane++) {
+    const entry = entriesByLane[lane];
+    const sw = entry && swimmers[entry.swimmerId];
+    const tr = document.createElement('tr');
+    tr.innerHTML = `<td><b>${lane}</b></td>
+      <td>${sw ? `${sw.name}${sw.team ? ` <span style="color:var(--mut)">· ${sw.team}</span>` : ''}` : '<span style="color:#ccd">empty</span>'}</td>
+      <td>${entry?.seedTime ?? ''}</td>
+      <td>${entry ? `<button class="touchbtn" data-lane="${lane}">Touch</button> <span class="time" id="time-${lane}"></span>` : ''}</td>`;
+    tbody.appendChild(tr);
+  }
+  tbody.querySelectorAll('.touchbtn').forEach((btn) => {
+    btn.onclick = async () => {
+      const c = currentFlat();
+      btn.disabled = true;
+      try {
+        await api('POST', `/meets/${meet.id}/events/${c.eventNumber}/heats/${c.heatNumber}/touch`,
+          { lane: Number(btn.dataset.lane) });
+      } catch (err) { btn.disabled = false; alert(err.message); }
+    };
+  });
+}
+
+function setLaneTime(lane, text) {
+  const el = $(`time-${lane}`);
+  if (el) el.textContent = text;
+}
+
+function startClock() {
+  stopClock();
+  clockTimer = setInterval(() => {
+    const s = (Date.now() - hornAt) / 1000;
+    $('raceClock').textContent = s >= 60
+      ? `${Math.floor(s / 60)}:${(s % 60).toFixed(1).padStart(4, '0')}`
+      : s.toFixed(1);
+  }, 100);
+}
+function stopClock() { if (clockTimer) clearInterval(clockTimer); clockTimer = null; }
+
+$('meetSelect').onchange = (e) => selectMeet(e.target.value);
+$('reloadMeets').onclick = () => loadMeets();
+$('advanceBtn').onclick = async () => { await api('POST', `/meets/${meet.id}/advance`); };
+$('hornBtn').onclick = async () => {
+  const c = currentFlat();
+  await api('POST', `/meets/${meet.id}/events/${c.eventNumber}/heats/${c.heatNumber}/horn`, {});
+};
+$('importBtn').onclick = async () => {
+  const file = $('csvFile').files[0];
+  const name = $('meetName').value.trim();
+  if (!file || !name) { alert('Pick a CSV file and enter a meet name'); return; }
+  try {
+    const created = await api('POST',
+      `/meets/import/csv?name=${encodeURIComponent(name)}&laneCount=${$('laneCount').value}`,
+      await file.text(), true);
+    log(`Imported "${created.name}"`);
+    loadMeets(created.id);
+  } catch (err) { alert(`Import failed: ${err.message}`); }
+};
+
+loadMeets();
+</script>
+</body>
+</html>

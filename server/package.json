@@ -1,0 +1,18 @@
+{
+  "name": "@swimalert/server",
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Swimalert backend: meet program, race alerts, timing, camera sync",
+  "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "start": "tsx src/index.ts",
+    "build": "tsc -p tsconfig.json",
+    "test": "node --import tsx --test test/*.test.ts",
+    "seed": "tsx scripts/seed.ts"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.7.0"
+  }
+}
